@@ -1,0 +1,33 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyTorch checkpoints and weights
+*.pth
+*.pt
+resume_state.pth
+
+# Compressed archives
+*.zip
+*.tar.gz
+*.tgz
+
+# Datasets (only track sources.txt and folder structure)
+Dataset/images/*
+!Dataset/images/.gitkeep
+Dataset/unseen_demo_images/*
+!Dataset/unseen_demo_images/.gitkeep
+
+# Output results and logs
+results*/
+results after epoch 150/
+results at 80/
+results_session 1 epooch 70/
+experiments/
+not needed/
+backup/
+
+# Temp files
+setup
+test_config.json.bak
