@@ -25,9 +25,36 @@ results after epoch 150/
 results at 80/
 results_session 1 epooch 70/
 experiments/
+experiment_v2/outputs/
 not needed/
 backup/
 
-# Temp files
+# Temp files & Obsolete prototypes
 setup
 test_config.json.bak
+generate_recommendations.py
+RECOMMENDATIONS_AND_EXPERIMENTS.pdf
+experiment_v2/implementation_plan.txt
+
+# Obsolete prototype scripts
+experiment_runner_confirm.py
+experiment_runner_full_model.py
+train_full_model*
+train_generator_only.py
+generate_documentation.py
+config/*_confirm.py
+config/*_full_model.py
+test_config.json
+
+# Local temp folders & binary docs
+*.pdf
+confirm_outputs/
+_dont need right now/
+.agents/
+scratch/
+
+# Phase 2 One-off diagnostics
+check_env.py
+test_hub_seg.py
+utils/precompute_ref_stats.py
+errors_to_remember.md

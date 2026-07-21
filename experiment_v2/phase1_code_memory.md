@@ -1,3 +1,30 @@
+# Phase 1 Code and Results Memory
+
+This file serves as a backup memory file documenting the code and findings of Phase 1 (Single-Variable Ablations) of the CycleGAN MRI-to-CT experiments before proceeding to Phase 2.
+
+## Phase 1 Results Summary Table
+
+| Configuration | n_blocks | lambda_cycle | lambda_idt_A | lambda_idt_B | upsample_mode | channels | augment_flip | augment_spatial | epochs | Best Cycle-SSIM |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **A_baseline** | 4 | 5.0 | 2.5 | 2.5 | `ConvTranspose` | 3 | False | False | 30 | **0.7930** |
+| **B_capacity** | **9** | 5.0 | 2.5 | 2.5 | `ConvTranspose` | 3 | False | False | 30 | **0.8066** |
+| **D_low_idt** | 9 | 5.0 | **0.5** | **0.5** | `ConvTranspose` | 3 | False | False | 30 | **0.7743** |
+| **R_resize** | 4 | 5.0 | 2.5 | 2.5 | **ResizeConv** | 3 | False | False | 30 | **0.7009** |
+| **F_asym_idt** | 9 | 5.0 | 2.5 | **0.5** | `ConvTranspose` | 3 | False | False | 30 | **0.8056** |
+| **S_spatial** | 4 | 5.0 | 2.5 | 2.5 | `ConvTranspose` | 3 | False | **True** | 50 | **0.7673** |
+
+### Key Observations:
+1. **Network Capacity (Winner):** Deeper generators (`n_blocks = 9` in `B_capacity`) perform better, achieving **0.8066** SSIM compared to **0.7930** SSIM of the baseline 4-block generators.
+2. **Identity Loss Weight:** Lowering identity loss to `0.5` (`D_low_idt`) reduces the SSIM significantly to **0.7743**, confirming that high identity constraints (`2.5`) are necessary to preserve structure.
+3. **Upsampling Mode (ConvTranspose Wins):** `ResizeConv` (`R_resize`) performed poorly on this task, dropping the SSIM to **0.7009** (nearly 10% lower than baseline). Standard `ConvTranspose` is superior.
+4. **Asymmetric Identity Loss:** `F_asym_idt` performs practically identical to `B_capacity` (**0.8056** vs **0.8066**). A higher identity weight of `2.5` on the CT generator path is beneficial.
+5. **Spatial Augmentation:** Adding spatial augmentations locally (`S_spatial`) led to a drop in SSIM (**0.7673**). This indicates that spatial changes (rotation, scaling) make convergence slower and harder within 50 epochs, or it might require more epochs.
+
+---
+
+## Phase 1 Source Code (`train_experiment.py`)
+
+```python
 import os
 import random
 import json
@@ -12,28 +39,13 @@ from torchvision.utils import save_image, make_grid
 from PIL import Image
 
 from skimage.metrics import structural_similarity as ssim_metric
-from utils.metrics import evaluate_all_metrics, AnatomicalDiceLoss
-from utils.losses import VGGPerceptualLoss, compute_fft_loss
-
-
 
 # ─────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────
 
 CONFIGS = {
-    "Run0_H_full_baseline": {
-        "n_blocks": 9,
-        "lambda_cycle": 5.0,
-        "lambda_identity_A": 2.5,
-        "lambda_identity_B": 2.5,
-        "upsample_mode": "ConvTranspose",
-        "channels": 1,
-        "augment_flip": True,
-        "augment_spatial": True,
-        "epochs": 50,
-    },
-    "Run1_A_baseline_dice": {
+    "A_baseline": {
         "n_blocks": 4,
         "lambda_cycle": 5.0,
         "lambda_identity_A": 2.5,
@@ -42,103 +54,91 @@ CONFIGS = {
         "channels": 3,
         "augment_flip": False,
         "augment_spatial": False,
-        "epochs": 50,
-        "lambda_dice": 1.0,
+        "epochs": 30,
     },
-    "Run2_H_full_resizeconv_bare": {
+    "B_capacity": {
         "n_blocks": 9,
         "lambda_cycle": 5.0,
         "lambda_identity_A": 2.5,
         "lambda_identity_B": 2.5,
-        "upsample_mode": "ResizeConv",
-        "channels": 1,
-        "augment_flip": True,
-        "augment_spatial": True,
-        "epochs": 50,
-    },
-    "Run3_H_full_resizeconv_R1": {
-        "n_blocks": 9,
-        "lambda_cycle": 5.0,
-        "lambda_identity_A": 2.5,
-        "lambda_identity_B": 2.5,
-        "upsample_mode": "ResizeConv",
-        "channels": 1,
-        "augment_flip": True,
-        "augment_spatial": True,
-        "epochs": 50,
-        "lambda_R1": 10.0,
-        "lr_D_mult": 4.0,  # TTUR: D lr scaled to 0.0004
-    },
-    "Run4_F_asym_idt_FFT_resizeconv": {
-        "n_blocks": 9,
-        "lambda_cycle": 5.0,
-        "lambda_identity_A": 2.5,
-        "lambda_identity_B": 0.5,
-        "upsample_mode": "ResizeConv",
+        "upsample_mode": "ConvTranspose",
         "channels": 3,
         "augment_flip": False,
         "augment_spatial": False,
-        "epochs": 50,
-        "lambda_fft": 1.0,
+        "epochs": 30,
     },
-    "Run5_G_low_idt_dice": {
+    "D_low_idt": {
         "n_blocks": 9,
         "lambda_cycle": 5.0,
         "lambda_identity_A": 0.5,
         "lambda_identity_B": 0.5,
         "upsample_mode": "ConvTranspose",
-        "channels": 1,
+        "channels": 3,
         "augment_flip": False,
         "augment_spatial": False,
-        "epochs": 50,
-        "lambda_dice": 1.0,
+        "epochs": 30,
     },
-    "Run6_H_full_perceptual_vgg": {
+    "R_resize": {
+        "n_blocks": 4,
+        "lambda_cycle": 5.0,
+        "lambda_identity_A": 2.5,
+        "lambda_identity_B": 2.5,
+        "upsample_mode": "ResizeConv",
+        "channels": 3,
+        "augment_flip": False,
+        "augment_spatial": False,
+        "epochs": 30,
+    },
+    "F_asym_idt": {
         "n_blocks": 9,
+        "lambda_cycle": 5.0,
+        "lambda_identity_A": 2.5,  # Keep high for MRI -> CT (G_B2A)
+        "lambda_identity_B": 0.5,  # Lower for CT -> MRI (G_A2B)
+        "upsample_mode": "ConvTranspose",
+        "channels": 3,
+        "augment_flip": False,
+        "augment_spatial": False,
+        "epochs": 30,
+    },
+    "S_spatial": {
+        "n_blocks": 4,
         "lambda_cycle": 5.0,
         "lambda_identity_A": 2.5,
         "lambda_identity_B": 2.5,
         "upsample_mode": "ConvTranspose",
+        "channels": 3,
+        "augment_flip": False,
+        "augment_spatial": True,    # rotation ±5°, scale 0.9–1.1
+        "epochs": 50,
+    },
+    "G_combined": {
+        "n_blocks": 9,
+        "lambda_cycle": 5.0,
+        "lambda_identity_A": 0.5,
+        "lambda_identity_B": 0.5,
+        "upsample_mode": "ResizeConv",
+        "channels": 1,              # Grayscale 1 channel
+        "augment_flip": False,
+        "augment_spatial": False,
+        "epochs": 30,
+    },
+    "H_full": {
+        "n_blocks": 9,
+        "lambda_cycle": 5.0,
+        "lambda_identity_A": 0.5,
+        "lambda_identity_B": 0.5,
+        "upsample_mode": "ResizeConv",
         "channels": 1,
         "augment_flip": True,
-        "augment_spatial": True,
-        "epochs": 50,
-        "lambda_perceptual": 0.5,
-        "fid_gated_stop": True,
-    },
-    "Run7_F_asym_idt_scheduled_TTUR": {
-        "n_blocks": 9,
-        "lambda_cycle": 5.0,
-        "lambda_identity_A": 2.5,
-        "lambda_identity_B": 2.5,  # initial weight (starts at 2.5)
-        "upsample_mode": "ConvTranspose",
-        "channels": 3,
-        "augment_flip": False,
-        "augment_spatial": False,
-        "epochs": 50,
-        "identity_schedule": True,  # linear decay CT->MRI idt from 2.5 -> 0.5 (epochs 15->50)
-        "lr_D_mult": 4.0,  # TTUR: D lr scaled to 0.0004
-    },
-    "Run8_B_capacity_R1_FFT": {
-        "n_blocks": 9,
-        "lambda_cycle": 5.0,
-        "lambda_identity_A": 2.5,
-        "lambda_identity_B": 2.5,
-        "upsample_mode": "ConvTranspose",
-        "channels": 3,
-        "augment_flip": False,
-        "augment_spatial": False,
-        "epochs": 50,
-        "lambda_R1": 10.0,
-        "lambda_fft": 1.0,
-        "lr_D_mult": 4.0,  # TTUR: D lr scaled to 0.0004
+        "augment_spatial": True,    # rotation ±5°, scale 0.9–1.1
+        "epochs": 50,               # 50 epochs for spatial augmentations to converge
     }
 }
 
 BASE_CONFIG = {
-    "ct_train_dir":  os.getenv("CT_TRAIN_DIR", r"E:\code\mri to cti\Dataset\images\trainA"),
-    "mri_train_dir": os.getenv("MRI_TRAIN_DIR", r"E:\code\mri to cti\Dataset\images\trainB"),
-    "output_dir":    os.getenv("OUTPUT_DIR", r"E:\code\mri to cti\experiment_v2\outputs"),
+    "ct_train_dir":  r"E:\code\mri to cti\Dataset\images\trainA",
+    "mri_train_dir": r"E:\code\mri to cti\Dataset\images\trainB",
+    "output_dir":    r"E:\code\mri to cti\experiment_v2\outputs",
     "image_size":    256,
     "ngf":           64,
     "ndf":           64,
@@ -296,7 +296,6 @@ def init_weights(net, gain=0.02):
     def _init(m):
         classname = m.__class__.__name__
         if classname.find("Conv") != -1:
-            # Resolved spectral-norm initialization override bug
             weight_attr = "weight_orig" if hasattr(m, "weight_orig") else "weight"
             w_data = getattr(m, weight_attr).data
             nn.init.normal_(w_data, 0.0, gain)
@@ -354,10 +353,6 @@ class ReplayBuffer:
 # ─────────────────────────────────────────────────────────────
 
 def compute_val_cycle_metrics(G_A2B, G_B2A, loader_ct, loader_mri, channels=3):
-    """
-    Computes Cycle-Reconstruction SSIM and MAE (which are mathematically valid paired metrics)
-    between the original and round-trip reconstructed images.
-    """
     G_A2B.eval()
     G_B2A.eval()
     
@@ -365,13 +360,11 @@ def compute_val_cycle_metrics(G_A2B, G_B2A, loader_ct, loader_mri, channels=3):
     mae_A, mae_B = [], []
     
     with torch.no_grad():
-        # Cycle A: CT -> fake MRI -> rec CT
         for real_A in loader_ct:
             real_A = real_A.to(device)
             fake_B = G_A2B(real_A)
             rec_A = G_B2A(fake_B)
             
-            # Explicit indexing [0] to resolve multi-batch squeeze bugs
             real_A_np = ((real_A[0].cpu().numpy() + 1) / 2).clip(0, 1)
             rec_A_np = ((rec_A[0].cpu().numpy() + 1) / 2).clip(0, 1)
             
@@ -380,20 +373,18 @@ def compute_val_cycle_metrics(G_A2B, G_B2A, loader_ct, loader_mri, channels=3):
                 rec_A_np = rec_A_np.transpose(1, 2, 0)
                 ssim_val = ssim_metric(real_A_np, rec_A_np, data_range=1.0, channel_axis=2)
             else:
-                real_A_np = real_A_np[0]  # Remove 1-channel dimension
+                real_A_np = real_A_np[0]
                 rec_A_np = rec_A_np[0]
                 ssim_val = ssim_metric(real_A_np, rec_A_np, data_range=1.0)
                 
             ssim_A.append(ssim_val)
             mae_A.append(float(np.mean(np.abs(real_A_np - rec_A_np))))
             
-        # Cycle B: MRI -> fake CT -> rec MRI
         for real_B in loader_mri:
             real_B = real_B.to(device)
             fake_A = G_B2A(real_B)
             rec_B = G_A2B(fake_A)
             
-            # Explicit indexing [0] to resolve multi-batch squeeze bugs
             real_B_np = ((real_B[0].cpu().numpy() + 1) / 2).clip(0, 1)
             rec_B_np = ((rec_B[0].cpu().numpy() + 1) / 2).clip(0, 1)
             
@@ -402,7 +393,7 @@ def compute_val_cycle_metrics(G_A2B, G_B2A, loader_ct, loader_mri, channels=3):
                 rec_B_np = rec_B_np.transpose(1, 2, 0)
                 ssim_val = ssim_metric(real_B_np, rec_B_np, data_range=1.0, channel_axis=2)
             else:
-                real_B_np = real_B_np[0]  # Remove 1-channel dimension
+                real_B_np = real_B_np[0]
                 rec_B_np = rec_B_np[0]
                 ssim_val = ssim_metric(real_B_np, rec_B_np, data_range=1.0)
                 
@@ -421,22 +412,16 @@ def compute_val_cycle_metrics(G_A2B, G_B2A, loader_ct, loader_mri, channels=3):
 
 
 def compute_val_identity_metrics(G_A2B, G_B2A, loader_ct, loader_mri, channels=3):
-    """
-    Computes Identity Mapping MAE (paired metric)
-    between the original target image and the generated target image.
-    """
     G_A2B.eval()
     G_B2A.eval()
     
     mae_idt_A, mae_idt_B = [], []
     
     with torch.no_grad():
-        # Identity A: G_B2A(real_A) = real_A in target domain
         for real_A in loader_ct:
             real_A = real_A.to(device)
             idt_A = G_B2A(real_A)
             
-            # Explicit indexing [0] to resolve multi-batch squeeze bugs
             real_A_np = ((real_A[0].cpu().numpy() + 1) / 2).clip(0, 1)
             idt_A_np = ((idt_A[0].cpu().numpy() + 1) / 2).clip(0, 1)
             
@@ -446,12 +431,10 @@ def compute_val_identity_metrics(G_A2B, G_B2A, loader_ct, loader_mri, channels=3
                 
             mae_idt_A.append(float(np.mean(np.abs(real_A_np - idt_A_np))))
             
-        # Identity B: G_A2B(real_B) = real_B in target domain
         for real_B in loader_mri:
             real_B = real_B.to(device)
             idt_B = G_A2B(real_B)
             
-            # Explicit indexing [0] to resolve multi-batch squeeze bugs
             real_B_np = ((real_B[0].cpu().numpy() + 1) / 2).clip(0, 1)
             idt_B_np = ((idt_B[0].cpu().numpy() + 1) / 2).clip(0, 1)
             
@@ -489,7 +472,6 @@ def run_experiment(config_name, exp_config):
     os.makedirs(os.path.join(out_dir, "samples"), exist_ok=True)
     os.makedirs(checkpoints_dir, exist_ok=True)
 
-    # Reconciled separate dataset references to resolve Subset transform sharing bug
     train_transform = get_transforms(cfg["image_size"], cfg["augment_flip"], cfg.get("augment_spatial", False), cfg["channels"])
     val_transform = get_transforms(cfg["image_size"], augment_flip=False, augment_spatial=False, channels=cfg["channels"])
 
@@ -509,7 +491,6 @@ def run_experiment(config_name, exp_config):
     ct_train, ct_val = get_split_subsets(full_ct_train, full_ct_val)
     mri_train, mri_val = get_split_subsets(full_mri_train, full_mri_val)
 
-    # Parametrized DataLoader workers to use config-driven safe values on Windows
     loader_ct_train  = DataLoader(ct_train,  batch_size=cfg["batch_size"], shuffle=True,  num_workers=cfg["num_workers"], pin_memory=True)
     loader_mri_train = DataLoader(mri_train, batch_size=cfg["batch_size"], shuffle=True,  num_workers=cfg["num_workers"], pin_memory=True)
     loader_ct_val    = DataLoader(ct_val,    batch_size=1, shuffle=False, num_workers=cfg["num_workers"])
@@ -520,32 +501,11 @@ def run_experiment(config_name, exp_config):
     D_A   = init_weights(NLayerDiscriminator(cfg["channels"], cfg["ndf"], cfg["n_layers_D"], cfg["use_spect"]).to(device))
     D_B   = init_weights(NLayerDiscriminator(cfg["channels"], cfg["ndf"], cfg["n_layers_D"], cfg["use_spect"]).to(device))
 
-    # Pre-instantiate feature extractor and anatomical segmenter once to prevent reload overhead
-    from utils.metrics import InceptionFeatureExtractor, AnatomicalDiceLoss
-    eval_extractor = InceptionFeatureExtractor().to(device)
-    eval_dice_loss = AnatomicalDiceLoss().to(device)
-
-    # Pre-instantiate VGG perceptual loss network if needed
-    from utils.losses import VGGPerceptualLoss
-    eval_perceptual_loss = None
-    if cfg.get("lambda_perceptual", 0.0) > 0.0:
-        eval_perceptual_loss = VGGPerceptualLoss().to(device)
-
-    best_ssim = -1.0
-    best_fid = float('inf')
-    patience_counter = 0
-    start_epoch = 1
-
     optimizer_G = torch.optim.Adam(list(G_A2B.parameters()) + list(G_B2A.parameters()),
                                    lr=cfg["lr_G"], betas=tuple(cfg["betas"]))
-    
-    # TTUR support: scale lr_D if lr_D_mult is specified in config
-    lr_D_actual = cfg["lr_D"] * cfg.get("lr_D_mult", 1.0)
     optimizer_D = torch.optim.Adam(list(D_A.parameters()) + list(D_B.parameters()),
-                                   lr=lr_D_actual, betas=tuple(cfg["betas"]))
+                                   lr=cfg["lr_D"], betas=tuple(cfg["betas"]))
 
-
-    # Resolved zero division error when epochs == decay_epoch (e.g. constant LR setup)
     def lr_lambda(epoch):
         e = epoch + 1
         if e < cfg["decay_epoch"]:
@@ -561,7 +521,19 @@ def run_experiment(config_name, exp_config):
     buffer_fake_A = ReplayBuffer(50)
     buffer_fake_B = ReplayBuffer(50)
 
-    # ── RESUME LOGIC (As requested to prevent losing computation if dropped mid-way) ──
+    history = {
+        "loss_G": [], 
+        "loss_D": [], 
+        "val_rec_ssim_A": [], 
+        "val_rec_ssim_B": [],
+        "val_rec_mae_A": [],
+        "val_rec_mae_B": [],
+        "val_idt_mae_A": [],
+        "val_idt_mae_B": []
+    }
+    best_ssim = -1.0
+    start_epoch = 1
+
     resume_path = os.path.join(checkpoints_dir, "resume_state.pth")
     if os.path.exists(resume_path):
         print(f"Loading checkpoint '{resume_path}' to resume training...")
@@ -576,33 +548,9 @@ def run_experiment(config_name, exp_config):
         scheduler_D.load_state_dict(state["sched_D"])
         history = state["history"]
         best_ssim = state["best_ssim"]
-        best_fid = state.get("best_fid", float('inf'))
-        patience_counter = state.get("patience_counter", 0)
         start_epoch = state["epoch"] + 1
-        print(f"Resuming successfully from epoch {start_epoch} (Best SSIM: {best_ssim:.4f} | Best FID: {best_fid:.2f})")
+        print(f"Resuming successfully from epoch {start_epoch} (Best SSIM: {best_ssim:.4f})")
 
-    # Reconciled tracking history using correct cycle metrics (as discussed in DOCX section 4.0)
-    history = {
-        "loss_G": [], 
-        "loss_D": [], 
-        "val_rec_ssim_A": [], 
-        "val_rec_ssim_B": [],
-        "val_rec_mae_A": [],
-        "val_rec_mae_B": [],
-        "val_idt_mae_A": [],
-        "val_idt_mae_B": [],
-        "val_fid_A": [],
-        "val_fid_B": [],
-        "val_cycle_dice_A": [],
-        "val_cycle_dice_B": [],
-        "val_idt_dice_A": [],
-        "val_idt_dice_B": [],
-        "val_fft_ratio_fake_A": [],
-        "val_fft_ratio_fake_B": []
-    }
-
-
-    # ── LOG FILE INITIALIZATION (Provides clean text-based progress reference) ──
     log_file = os.path.join(out_dir, "train_log.txt")
     with open(log_file, "a") as f:
         f.write(f"\n--- Run Started/Resumed: Epoch {start_epoch} to {cfg['epochs']} ---\n")
@@ -610,18 +558,6 @@ def run_experiment(config_name, exp_config):
     for epoch in range(start_epoch, cfg["epochs"] + 1):
         epoch_loss_G, epoch_loss_D, n_batches = 0.0, 0.0, 0
 
-        # Calculate scheduled identity weight decay for Run 7 (CT -> MRI identity loss)
-        lambda_idt_B_current = cfg["lambda_identity_B"]
-        if cfg.get("identity_schedule", False) and epoch >= 15:
-            decay_range = cfg["epochs"] - 15
-            if decay_range > 0:
-                fraction = (epoch - 15) / decay_range
-                # Decays linearly from configuration base down to target end weight (default 0.5)
-                start_weight = cfg["lambda_identity_B"]
-                end_weight = cfg.get("lambda_identity_B_final", 0.5)
-                lambda_idt_B_current = start_weight - fraction * (start_weight - end_weight)
-
-        # Prevent silent dataset truncation by looping over max batches and cycling the shorter domain
         len_ct = len(loader_ct_train)
         len_mri = len(loader_mri_train)
         max_batches = max(len_ct, len_mri)
@@ -629,7 +565,7 @@ def run_experiment(config_name, exp_config):
         iter_ct = iter(loader_ct_train)
         iter_mri = iter(loader_mri_train)
 
-        for step in range(max_batches):
+        for _ in range(max_batches):
             try:
                 real_A = next(iter_ct)
             except StopIteration:
@@ -644,14 +580,9 @@ def run_experiment(config_name, exp_config):
 
             real_A, real_B = real_A.to(device), real_B.to(device)
 
-            # ──────────────────────────────────────────────────
-            # GENERATOR STEP
-            # ──────────────────────────────────────────────────
             optimizer_G.zero_grad()
-            
-            # Asymmetric Identity Loss support (with linear schedule logic)
             loss_idt_A = criterion_identity(G_B2A(real_A), real_A) * cfg["lambda_identity_A"]
-            loss_idt_B = criterion_identity(G_A2B(real_B), real_B) * lambda_idt_B_current
+            loss_idt_B = criterion_identity(G_A2B(real_B), real_B) * cfg["lambda_identity_B"]
             
             fake_B = G_A2B(real_A)
             fake_A = G_B2A(real_B)
@@ -659,74 +590,20 @@ def run_experiment(config_name, exp_config):
             loss_gan_A2B = gan_loss(D_B(fake_B), True)
             loss_gan_B2A = gan_loss(D_A(fake_A), True)
             
-            rec_A = G_B2A(fake_B)
-            rec_B = G_A2B(fake_A)
+            loss_cycle_A = criterion_cycle(G_B2A(fake_B), real_A) * cfg["lambda_cycle"]
+            loss_cycle_B = criterion_cycle(G_A2B(fake_A), real_B) * cfg["lambda_cycle"]
             
-            loss_cycle_A = criterion_cycle(rec_A, real_A) * cfg["lambda_cycle"]
-            loss_cycle_B = criterion_cycle(rec_B, real_B) * cfg["lambda_cycle"]
-            
-            # 1. Dice Loss (Runs 1, 5) - Calibrated for CT and MRI anatomical structures
-            loss_dice = 0.0
-            if cfg.get("lambda_dice", 0.0) > 0.0:
-                loss_dice_A = eval_dice_loss(rec_A, real_A, modality="ct")
-                loss_dice_B = eval_dice_loss(rec_B, real_B, modality="mri")
-                loss_dice = (loss_dice_A + loss_dice_B) * cfg["lambda_dice"]
-                
-            # 2. FFT Loss (Runs 4, 8)
-            loss_fft = 0.0
-            if cfg.get("lambda_fft", 0.0) > 0.0:
-                loss_fft = (compute_fft_loss(rec_A, real_A) + compute_fft_loss(rec_B, real_B)) * cfg["lambda_fft"]
-                
-            # 3. VGG Perceptual Loss (Run 6) - Computed on paired cycle-reconstructions
-            loss_perceptual = 0.0
-            if cfg.get("lambda_perceptual", 0.0) > 0.0 and eval_perceptual_loss is not None:
-                loss_perceptual = (eval_perceptual_loss(rec_B, real_B) + eval_perceptual_loss(rec_A, real_A)) * cfg["lambda_perceptual"]
-            
-            loss_G = (loss_gan_A2B + loss_gan_B2A + 
-                      loss_cycle_A + loss_cycle_B + 
-                      loss_idt_A + loss_idt_B + 
-                      loss_dice + loss_fft + loss_perceptual)
-                      
+            loss_G = loss_gan_A2B + loss_gan_B2A + loss_cycle_A + loss_cycle_B + loss_idt_A + loss_idt_B
             loss_G.backward()
             optimizer_G.step()
 
-            # ──────────────────────────────────────────────────
-            # DISCRIMINATOR STEP
-            # ──────────────────────────────────────────────────
             optimizer_D.zero_grad()
             fake_A_buf = buffer_fake_A.push_and_pop(fake_A.detach())
             loss_D_A = 0.5 * (gan_loss(D_A(real_A), True) + gan_loss(D_A(fake_A_buf), False))
-            
             fake_B_buf = buffer_fake_B.push_and_pop(fake_B.detach())
             loss_D_B = 0.5 * (gan_loss(D_B(real_B), True) + gan_loss(D_B(fake_B_buf), False))
-            
             loss_D = loss_D_A + loss_D_B
             loss_D.backward()
-            
-            # Lazy regularization: R1 Gradient Penalty computed every 16 steps (Runs 3, 8)
-            if cfg.get("lambda_R1", 0.0) > 0.0 and step % 16 == 0:
-                real_A.requires_grad = True
-                real_B.requires_grad = True
-                
-                pred_real_A = D_A(real_A)
-                pred_real_B = D_B(real_B)
-                
-                grads_A = torch.autograd.grad(
-                    outputs=pred_real_A.sum(), inputs=real_A, 
-                    create_graph=True, retain_graph=True, only_inputs=True
-                )[0]
-                grads_B = torch.autograd.grad(
-                    outputs=pred_real_B.sum(), inputs=real_B, 
-                    create_graph=True, retain_graph=True, only_inputs=True
-                )[0]
-                
-                r1_penalty_A = (grads_A ** 2).sum(dim=(1, 2, 3)).mean()
-                r1_penalty_B = (grads_B ** 2).sum(dim=(1, 2, 3)).mean()
-                
-                # Scale by interval (16.0) to maintain gradient expectation scale
-                loss_R1 = 0.5 * (r1_penalty_A + r1_penalty_B) * cfg["lambda_R1"] * 16.0
-                loss_R1.backward()
-                
             optimizer_D.step()
 
             epoch_loss_G += loss_G.item()
@@ -741,72 +618,31 @@ def run_experiment(config_name, exp_config):
         history["loss_G"].append(avg_G)
         history["loss_D"].append(avg_D)
 
-        if epoch % cfg.get("eval_interval", 10) == 0:
-            # Call unified evaluation hook to compute all 5 metrics and save CSV log
-            metrics = evaluate_all_metrics(
-                G_A2B, G_B2A, loader_ct_val, loader_mri_val, 
-                channels=cfg["channels"], device=device, epoch=epoch, run_dir=out_dir,
-                extractor=eval_extractor, dice_loss_fn=eval_dice_loss
-            )
+        if epoch % 10 == 0:
+            metrics = compute_val_cycle_metrics(G_A2B, G_B2A, loader_ct_val, loader_mri_val, channels=cfg["channels"])
+            idt_metrics = compute_val_identity_metrics(G_A2B, G_B2A, loader_ct_val, loader_mri_val, channels=cfg["channels"])
             
-            val_ssim_A = metrics["cycle_ssim_A2B"]
-            val_ssim_B = metrics["cycle_ssim_B2A"]
-            avg_ssim = metrics["avg_ssim"]
+            val_ssim_A = metrics["ssim_rec_A"]
+            val_ssim_B = metrics["ssim_rec_B"]
+            avg_ssim = (val_ssim_A + val_ssim_B) / 2
             
             history["val_rec_ssim_A"].append(val_ssim_A)
             history["val_rec_ssim_B"].append(val_ssim_B)
-            history["val_rec_mae_A"].append(metrics["cycle_mae_A2B"])
-            history["val_rec_mae_B"].append(metrics["cycle_mae_B2A"])
-            history["val_idt_mae_A"].append(metrics["idt_mae_A2B"])
-            history["val_idt_mae_B"].append(metrics["idt_mae_B2A"])
-            history["val_fid_A"].append(metrics["fid_A"])
-            history["val_fid_B"].append(metrics["fid_B"])
-            history["val_cycle_dice_A"].append(metrics["cycle_dice_A2B"])
-            history["val_cycle_dice_B"].append(metrics["cycle_dice_B2A"])
-            history["val_idt_dice_A"].append(metrics["idt_dice_A"])
-            history["val_idt_dice_B"].append(metrics["idt_dice_B"])
-            history["val_fft_ratio_fake_A"].append(metrics["fft_ratio_fake_A"])
-            history["val_fft_ratio_fake_B"].append(metrics["fft_ratio_fake_B"])
+            history["val_rec_mae_A"].append(metrics["mae_rec_A"])
+            history["val_rec_mae_B"].append(metrics["mae_rec_B"])
+            history["val_idt_mae_A"].append(idt_metrics["mae_idt_A"])
+            history["val_idt_mae_B"].append(idt_metrics["mae_idt_B"])
             
             if avg_ssim > best_ssim:
                 best_ssim = avg_ssim
             
             log_str = (f"[Epoch {epoch:03d}/{cfg['epochs']}] Loss_G: {avg_G:.4f} | Loss_D: {avg_D:.4f} | "
                        f"Val Rec SSIM A: {val_ssim_A:.4f} | B: {val_ssim_B:.4f} | "
-                       f"Val Rec MAE A: {metrics['cycle_mae_A2B']:.4f} | B: {metrics['cycle_mae_B2A']:.4f} | "
-                       f"Val Idt MAE A: {metrics['idt_mae_A2B']:.4f} | B: {metrics['idt_mae_B2A']:.4f} | "
-                       f"Val FID A: {metrics['fid_A']:.2f} | B: {metrics['fid_B']:.2f} | "
-                       f"Val Dice Cycle CT: {metrics['cycle_dice_A2B']:.4f} | MRI: {metrics['cycle_dice_B2A']:.4f} | "
-                       f"Val Dice Idt CT: {metrics['idt_dice_A']:.4f} | MRI: {metrics['idt_dice_B']:.4f} | "
-                       f"Val FFT Ratio CT: {metrics['fft_ratio_fake_A']:.4f} | MRI: {metrics['fft_ratio_fake_B']:.4f}")
+                       f"Val Rec MAE A: {metrics['mae_rec_A']:.4f} | B: {metrics['mae_rec_B']:.4f} | "
+                       f"Val Idt MAE A: {idt_metrics['mae_idt_A']:.4f} | B: {idt_metrics['mae_idt_B']:.4f}")
             print(log_str)
             with open(log_file, "a") as f:
                 f.write(log_str + "\n")
-                
-            # FID-Gated Early Stopping logic (Run 6)
-            if cfg.get("fid_gated_stop", False):
-                # Target is CT -> MRI direction realism (monitor MRI-domain FID: fid_B)
-                current_fid = metrics["fid_B"]
-                
-                # Floor check: patience starts counting only after epoch 30
-                if epoch < 30:
-                    if current_fid < best_fid:
-                        best_fid = current_fid
-                else:
-                    if current_fid < (best_fid - 1.0):
-                        print(f"🔥 FID improved from {best_fid:.2f} to {current_fid:.2f}. Resetting patience.")
-                        best_fid = current_fid
-                        patience_counter = 0
-                    else:
-                        patience_counter += 1
-                        print(f"⚠️ FID did not improve. Patience: {patience_counter}/3 (Best FID: {best_fid:.2f})")
-                        
-                    if patience_counter >= 3:
-                        log_stop = f"🛑 FID-gated early stopping triggered at epoch {epoch}. Best FID: {best_fid:.2f}"
-                        print(log_stop)
-                        with open(log_file, "a") as f:
-                            f.write(log_stop + "\n")
-                        break
         else:
             log_str = f"[Epoch {epoch:03d}/{cfg['epochs']}] Loss_G: {avg_G:.4f} | Loss_D: {avg_D:.4f}"
             print(log_str)
@@ -831,19 +667,17 @@ def run_experiment(config_name, exp_config):
             torch.save(G_A2B.state_dict(), os.path.join(checkpoints_dir, f"G_A2B_epoch{epoch}.pth"))
             torch.save(G_B2A.state_dict(), os.path.join(checkpoints_dir, f"G_B2A_epoch{epoch}.pth"))
             torch.save({
-                "epoch":            epoch,
-                "G_A2B":            G_A2B.state_dict(),
-                "G_B2A":            G_B2A.state_dict(),
-                "D_A":              D_A.state_dict(),
-                "D_B":              D_B.state_dict(),
-                "opt_G":            optimizer_G.state_dict(),
-                "opt_D":            optimizer_D.state_dict(),
-                "sched_G":          scheduler_G.state_dict(),
-                "sched_D":          scheduler_D.state_dict(),
-                "history":          history,
-                "best_ssim":        best_ssim,
-                "best_fid":         best_fid,
-                "patience_counter": patience_counter,
+                "epoch":      epoch,
+                "G_A2B":      G_A2B.state_dict(),
+                "G_B2A":      G_B2A.state_dict(),
+                "D_A":        D_A.state_dict(),
+                "D_B":        D_B.state_dict(),
+                "opt_G":      optimizer_G.state_dict(),
+                "opt_D":      optimizer_D.state_dict(),
+                "sched_G":    scheduler_G.state_dict(),
+                "sched_D":    scheduler_D.state_dict(),
+                "history":    history,
+                "best_ssim":  best_ssim,
             }, resume_path)
             
             with open(os.path.join(out_dir, "history.json"), "w") as f:
@@ -858,8 +692,7 @@ def run_experiment(config_name, exp_config):
 # ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # Run the H_full baseline by default
-    RUN_LIST = ["Run0_H_full_baseline"]
+    RUN_LIST = ["A_baseline", "B_capacity", "D_low_idt", "R_resize", "F_asym_idt", "S_spatial"]
     
     results = {}
     for name in RUN_LIST:
@@ -878,10 +711,9 @@ if __name__ == "__main__":
               f"lambda_idt_A={cfg['lambda_identity_A']} | lambda_idt_B={cfg['lambda_identity_B']} | "
               f"upsample={cfg['upsample_mode']} | channels={cfg['channels']}")
 
-    # Prevent FileNotFoundError by ensuring the parent outputs directory exists
     os.makedirs(BASE_CONFIG["output_dir"], exist_ok=True)
     with open(os.path.join(BASE_CONFIG["output_dir"], "experiment_summary.json"), "w") as f:
         summary = {k: {"best_ssim": v["best_ssim"], "config": CONFIGS[k]} for k, v in results.items() if k in RUN_LIST}
         json.dump(summary, f, indent=2)
     print("\nSummary saved to experiment_summary.json")
-
+```
