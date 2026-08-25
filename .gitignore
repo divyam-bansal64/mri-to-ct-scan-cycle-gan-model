@@ -57,4 +57,4 @@ scratch/
 check_env.py
 test_hub_seg.py
 utils/precompute_ref_stats.py
-errors_to_remember.md
+copy_assets.py

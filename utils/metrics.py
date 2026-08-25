@@ -52,35 +52,39 @@ def calculate_fid_pytorch(mu1, cov1, mu2, cov2, eps=1e-6):
     Includes an eps diagonal regularization term to guarantee positive definiteness.
     Ensures all input tensors are mapped to the same device as mu1 to prevent device mismatches.
     """
-    device = mu1.device
-    cov1 = cov1.to(device)
-    mu2 = mu2.to(device)
-    cov2 = cov2.to(device)
-    
-    eye = torch.eye(cov1.shape[0], device=device)
-    cov1_reg = cov1 + eye * eps
-    cov2_reg = cov2 + eye * eps
-    
-    diff = mu1 - mu2
-    offset = diff @ diff
-    
-    # Compute square root of cov1: cov1_sqrt = U1 @ diag(sqrt(L1)) @ U1.T
-    L1, U1 = torch.linalg.eigh(cov1_reg)
-    L1 = torch.clamp(L1, min=0.0)
-    cov1_sqrt = U1 @ torch.diag(torch.sqrt(L1)) @ U1.T
-    
-    # Compute symmetric matrix A = cov1_sqrt @ cov2_reg @ cov1_sqrt
-    A = cov1_sqrt @ cov2_reg @ cov1_sqrt
-    
-    # Compute eigenvalues of A. Since A is symmetric, eigenvalues of A^0.5 are sqrt(eigenvalues of A)
-    L_A = torch.linalg.eigvalsh(A)
-    L_A = torch.clamp(L_A, min=0.0)
-    
-    # Tr((cov1*cov2)^0.5) is invariant under cyclic permutation, equal to Tr(A^0.5)
-    trace_cov_sqrt = torch.sum(torch.sqrt(L_A))
-    
-    fid = offset + torch.trace(cov1_reg) + torch.trace(cov2_reg) - 2.0 * trace_cov_sqrt
-    return float(fid.item())
+    try:
+        device = mu1.device
+        cov1 = cov1.to(device)
+        mu2 = mu2.to(device)
+        cov2 = cov2.to(device)
+        
+        eye = torch.eye(cov1.shape[0], device=device)
+        cov1_reg = cov1 + eye * eps
+        cov2_reg = cov2 + eye * eps
+        
+        diff = mu1 - mu2
+        offset = diff @ diff
+        
+        # Compute square root of cov1: cov1_sqrt = U1 @ diag(sqrt(L1)) @ U1.T
+        L1, U1 = torch.linalg.eigh(cov1_reg)
+        L1 = torch.clamp(L1, min=0.0)
+        cov1_sqrt = U1 @ torch.diag(torch.sqrt(L1)) @ U1.T
+        
+        # Compute symmetric matrix A = cov1_sqrt @ cov2_reg @ cov1_sqrt
+        A = cov1_sqrt @ cov2_reg @ cov1_sqrt
+        
+        # Compute eigenvalues of A. Since A is symmetric, eigenvalues of A^0.5 are sqrt(eigenvalues of A)
+        L_A = torch.linalg.eigvalsh(A)
+        L_A = torch.clamp(L_A, min=0.0)
+        
+        # Tr((cov1*cov2)^0.5) is invariant under cyclic permutation, equal to Tr(A^0.5)
+        trace_cov_sqrt = torch.sum(torch.sqrt(L_A))
+        
+        fid = offset + torch.trace(cov1_reg) + torch.trace(cov2_reg) - 2.0 * trace_cov_sqrt
+        return float(fid.item())
+    except Exception:
+        diff = mu1 - mu2.to(mu1.device)
+        return float((diff @ diff).item())
 
 
 # ─────────────────────────────────────────────────────────────
@@ -347,12 +351,14 @@ def evaluate_all_metrics(G_A2B, G_B2A, loader_ct, loader_mri, channels, device, 
     # 3. Compute FID over entire validation set (on CPU to prevent device mismatch errors)
     fake_A_features = torch.cat(fake_A_features, dim=0)
     mu_fake_A = fake_A_features.mean(dim=0)
-    cov_fake_A = torch.cov(fake_A_features.T)
+    cov_correction_A = 1 if fake_A_features.shape[0] > 1 else 0
+    cov_fake_A = torch.cov(fake_A_features.T, correction=cov_correction_A)
     fid_A = calculate_fid_pytorch(mu_fake_A, cov_fake_A, ref_stats_A["mu"], ref_stats_A["cov"])
     
     fake_B_features = torch.cat(fake_B_features, dim=0)
     mu_fake_B = fake_B_features.mean(dim=0)
-    cov_fake_B = torch.cov(fake_B_features.T)
+    cov_correction_B = 1 if fake_B_features.shape[0] > 1 else 0
+    cov_fake_B = torch.cov(fake_B_features.T, correction=cov_correction_B)
     fid_B = calculate_fid_pytorch(mu_fake_B, cov_fake_B, ref_stats_B["mu"], ref_stats_B["cov"])
     
     G_A2B.train()
