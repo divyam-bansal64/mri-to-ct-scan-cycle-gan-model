@@ -1,196 +1,134 @@
-# Architecture Decisions: Generator, Discriminator & Training Design
+# Architecture Decisions
 
-> Design rationale for every architectural choice made during the project, including what worked, what failed, and why.
+Every architectural choice here was tested experimentally. This document covers what was chosen,
+what was tried and rejected, and why.
 
 ---
 
-## 1. Generator Architecture: ResNet-9
+## Generator: ResNet-9
 
-### What We Used
-
-A **ResNet-based generator** with 9 residual blocks, following the CycleGAN paper (Zhu et al., 2017). The architecture follows an **encoder-transformer-decoder** pattern:
+The generator follows the standard CycleGAN architecture — an encoder-bottleneck-decoder with
+residual blocks in the middle:
 
 ```
 Input (1×256×256)
     ↓
-[Encoder] ReflectionPad(3) → Conv2d(1→64, 7×7) → InstanceNorm → ReLU
+ReflectionPad(3) → Conv2d(1→64, 7×7) → InstanceNorm → ReLU
     ↓
-[Downsample ×2] Conv2d(3×3, stride=2) → InstanceNorm → ReLU
-    64 → 128 → 256 channels, spatial: 256 → 128 → 64
+Conv2d(3×3, stride=2) × 2    [downsampling: 256→128→64 spatial, 64→128→256 channels]
     ↓
-[Residual Blocks ×9] Conv2d(3×3) → InstanceNorm → ReLU → Conv2d(3×3) → InstanceNorm + Skip
-    256 channels, spatial: 64×64
+ResidualBlock × 9            [64×64 spatial, 256 channels]
     ↓
-[Upsample ×2] ConvTranspose2d(3×3, stride=2) → InstanceNorm → ReLU
-    256 → 128 → 64 channels, spatial: 64 → 128 → 256
+ConvTranspose2d × 2          [upsampling: 64→128→256 spatial, 256→128→64 channels]
     ↓
-[Output] ReflectionPad(3) → Conv2d(64→1, 7×7) → Tanh
+ReflectionPad(3) → Conv2d(64→1, 7×7) → Tanh
     ↓
 Output (1×256×256), range [-1, 1]
 ```
 
-### Why 9 Residual Blocks
+**Why 9 residual blocks:** The CycleGAN paper recommends 9 blocks for 256×256 input. Phase 1 confirmed
+this — 4 blocks (Run 8) dropped SSIM from 0.894 to 0.869. The bottleneck at 64×64 with 256 channels
+gives each residual block enough receptive field to capture anatomical structures like ventricles
+and sulci without losing spatial precision.
 
-The CycleGAN paper recommends 9 blocks for 256×256 images and 6 blocks for 128×128. Our Phase 1 experiments confirmed that 9 blocks outperformed reduced configurations:
+**Why InstanceNorm instead of BatchNorm:** With batch size 1 (standard for CycleGAN), BatchNorm
+computes statistics from a single sample, which is effectively useless and noisy. InstanceNorm
+normalizes per-image, per-channel and is invariant to batch size. CT and MRI also have completely
+different global intensity distributions — BatchNorm's running statistics would bleed between domains.
 
-- **9 blocks**: SSIM = 0.894 (Phase 2, Run 0)
-- **4 blocks** (Run 8, Phase 2): SSIM = 0.869 — insufficient capacity to learn the mapping
-
-The bottleneck operates at 64×64 spatial resolution with 256 channels, giving each residual block a receptive field large enough to capture anatomical structures (ventricles, sulci) while maintaining spatial precision.
-
-### Why InstanceNorm (Not BatchNorm)
-
-**InstanceNorm2d** normalizes each image independently (per-channel, per-sample). **BatchNorm2d** normalizes across the batch.
-
-In unpaired translation, each batch contains a **single image** (batch_size=1 is standard for CycleGAN). BatchNorm with batch_size=1 computes statistics from a single sample, producing noisy normalization that destabilizes training. InstanceNorm is invariant to batch size.
-
-Additionally, CT and MRI have fundamentally different intensity distributions. BatchNorm's running statistics would blend these distributions if both domains were processed by shared layers.
-
-### Why ConvTranspose2d (Not ResizeConv)
-
-We tested two upsampling strategies:
-
-| Method | Mechanism | SSIM (Phase 2) | Issue |
-| :--- | :--- | :---: | :--- |
-| **ConvTranspose2d** | Learned fractional-strided convolution | **0.894** | Minor checkerboard risk |
-| **ResizeConv** (bilinear + Conv2d) | Bilinear interpolation → convolution | 0.842 | **Low-pass filter** — blurs output |
-
-Bilinear interpolation averages neighboring pixels, acting as a spatial low-pass filter. The subsequent convolution cannot recover the high-frequency detail that was already destroyed. This produced a **5.8% SSIM drop** from a single architectural change.
-
-**ConvTranspose2d** learns the upsampling kernel, allowing it to produce sharp edges. The theoretical checkerboard artifact risk is mitigated by using kernel_size=3 (odd) with stride=2 and output_padding=1.
-
-### Why Tanh Output Activation
-
-The generator outputs values in [-1, 1] via `Tanh`. This matches the input normalization `Normalize((0.5,), (0.5,))` which maps [0,1] → [-1,1]. Using Tanh (vs. no activation or Sigmoid) ensures:
-- Output is bounded — prevents gradient explosion from unbounded predictions
-- Symmetric range matches the L1 loss landscape
-- Standard practice in image-to-image GANs
+**Why Tanh output:** Output range [-1, 1] matches the input normalization (Normalize(0.5, 0.5)
+maps [0,1] → [-1,1]). Tanh keeps output bounded, which prevents gradient explosion and is standard
+practice in image-to-image GANs.
 
 ---
 
-## 2. Discriminator Architecture: PatchGAN
+## Upsampling: ConvTranspose2d vs ResizeConv (Bilinear)
 
-### What We Used
+This was tested directly. Results from Phase 2:
 
-A **PatchGAN discriminator** (Isola et al., 2017) that outputs a spatial map of real/fake predictions rather than a single scalar:
+| Method | SSIM | Notes |
+| :--- | :---: | :--- |
+| ConvTranspose2d | 0.894 | Learned upsampling, produces sharp edges |
+| ResizeConv (bilinear + Conv2d) | 0.842 | 5.8% SSIM drop from this change alone |
+
+Bilinear interpolation is a spatial low-pass filter — it averages neighboring pixels before passing
+to the convolution. The convolution cannot recover high-frequency detail that was already destroyed
+by averaging. The result is inherently blurrier output regardless of training duration.
+
+ConvTranspose2d (fractional-strided convolution) learns the upsampling kernel, so the network can
+produce sharp edges. The checkerboard artifact risk is mitigated by using kernel_size=3 (odd) with
+stride=2 and output_padding=1.
+
+---
+
+## Discriminator: PatchGAN
+
+A PatchGAN discriminator outputs a spatial map (30×30 for 256×256 input) rather than a single
+real/fake scalar. Each cell in the output corresponds to a 70×70 receptive field in the input.
 
 ```
 Input (1×256×256)
     ↓
-Conv2d(1→64, 4×4, stride=2) → LeakyReLU(0.2)          # No normalization
-    ↓
+Conv2d(1→64, 4×4, stride=2) → LeakyReLU(0.2)
 Conv2d(64→128, 4×4, stride=2) → InstanceNorm → LeakyReLU(0.2)
-    ↓
 Conv2d(128→256, 4×4, stride=2) → InstanceNorm → LeakyReLU(0.2)
-    ↓
 Conv2d(256→512, 4×4, stride=1) → InstanceNorm → LeakyReLU(0.2)
+Conv2d(512→1, 4×4, stride=1)
     ↓
-Conv2d(512→1, 4×4, stride=1)    # No activation (used with MSE loss)
-    ↓
-Output: (1×30×30) patch map
+Output: (1×30×30) — one real/fake score per 70×70 patch
 ```
 
-### Why PatchGAN (Not Global Discriminator)
+This is better than a global discriminator for medical images because brain anatomy has repetitive
+local structure (cortical folds, bone boundaries). Patch-level discrimination forces the generator
+to produce realistic local textures, not just a globally plausible image.
 
-Each cell in the 30×30 output map corresponds to a **70×70 receptive field** in the input image. The discriminator classifies whether each 70×70 patch looks real or fake, rather than making a single judgment about the entire image.
-
-Benefits:
-- **Captures local texture**: Medical images have repetitive local structure (brain folds, bone boundaries). Patch-level discrimination forces the generator to produce realistic local textures.
-- **Fewer parameters**: A 30×30 PatchGAN has far fewer parameters than a full-image discriminator, reducing overfitting risk.
-- **Spatial gradients**: Each spatial location provides an independent gradient signal to the generator, producing richer training feedback than a single scalar.
-
-### Why MSE Loss (Not BCE)
-
-We used **MSE (Least Squares GAN)** loss instead of the original GAN's binary cross-entropy:
-
-```python
-def gan_loss(pred, target_is_real):
-    target = torch.ones_like(pred) if target_is_real else torch.zeros_like(pred)
-    return F.mse_loss(pred, target)
-```
-
-LSGAN (Mao et al., 2017) produces more stable training than BCE because:
-- BCE saturates when the discriminator is confident (gradient → 0)
-- MSE provides non-zero gradients even for well-classified samples
-- Shown to produce higher quality images in practice
+**Why MSE loss (LSGAN) instead of BCE:** When the discriminator is confident, BCE gradients vanish
+(log(1) → 0). MSE provides non-zero gradients even for well-classified samples, which keeps the
+generator receiving useful feedback throughout training.
 
 ---
 
-## 3. Training Design Decisions
+## Training Design
 
-### Replay Buffer (Size 50)
+**Replay buffer (size 50):** The discriminator trains on a mix of current and historical fake images
+(50% probability each). Without this, the discriminator overfits to the generator's latest output
+distribution and oscillates as the generator changes.
 
-A **replay buffer** stores the 50 most recently generated fake images. When training the discriminator, instead of always using the current generator's output, we sample from this buffer with 50% probability.
+**Learning rate schedule:** Constant at 0.0002 for the first 100 epochs, then linear decay to 0
+over the next 100. This gives the model time to learn the general mapping before fine-tuning.
 
-```python
-class ReplayBuffer:
-    def push_and_pop(self, data):
-        if random.uniform(0, 1) > 0.5:
-            # Use historical fake instead of current fake
-            return self.data[random.choice]
-```
+**Equal learning rates — no TTUR:** TTUR (Two Time-scale Update Rule) sets the discriminator LR
+4x higher than the generator. Tested in Phase 2, it failed every time:
 
-This prevents the discriminator from overfitting to the generator's current output distribution and reduces training oscillation.
-
-### Learning Rate Schedule
-
-**Linear decay** starting at the midpoint of training:
-
-```python
-# Constant LR for first 100 epochs, then linearly decay to 0 over next 100
-lr_G = lr_D = 0.0002
-decay_epoch = 100  # Start decay at epoch 100 (out of 200)
-```
-
-This gives the model 100 epochs to learn the general mapping, then gradually fine-tunes by reducing the step size. The linear (not cosine) schedule was chosen for simplicity and is standard in CycleGAN.
-
-### Equal Learning Rates (No TTUR)
-
-**TTUR** (Two Time-scale Update Rule) uses a faster learning rate for the discriminator (e.g., lr_D = 4×lr_G). We tested this in Phase 2 and it **failed in 3/3 runs**:
-
-| Run | TTUR Config | Outcome |
+| Run | Config | What happened |
 | :--- | :--- | :--- |
-| Run 3 | lr_G=0.0001, lr_D=0.0004 + R1 | Violent D-loss oscillation |
-| Run 7 | lr_G=0.0001, lr_D=0.0004 + identity decay | Loss reversal after epoch 33 |
-| Run 8 | lr_G=0.0001, lr_D=0.0004 + R1 + FFT | Combined instability |
+| Run 3 | TTUR + R1 | Violent discriminator loss oscillation |
+| Run 7 | TTUR + identity decay | Generator loss reversed direction after epoch 33 |
+| Run 8 | TTUR + R1 + FFT | Combined instability from both |
 
-TTUR works in StyleGAN (single-image generation, no cycle loss). In CycleGAN, the generator already has a harder optimization landscape (adversarial + cycle + identity losses). Giving the discriminator extra speed advantage makes the imbalance worse.
+TTUR was designed for StyleGAN, which doesn't have cycle or identity losses. In CycleGAN, the
+generator already has a harder optimization problem (three separate loss components vs one for the
+discriminator). Giving the discriminator extra speed makes the imbalance worse.
 
-**Lesson**: Equal learning rates (lr_G = lr_D = 0.0002) for CycleGAN. Always.
-
-### Grayscale (1-Channel, Not RGB)
-
-Both CT and MRI brain images are inherently grayscale modalities. Using 3-channel RGB:
-- Triples memory usage for no information gain
-- Introduces cross-channel gradient interactions that can cause color artifacts
-- Requires the model to learn that R=G=B (wasted capacity)
-
-Phase 1 confirmed that 1-channel grayscale with appropriate augmentation matches or exceeds 3-channel training quality.
+**Grayscale (1 channel):** CT and MRI are inherently grayscale. Using 3-channel RGB triples memory
+for zero information gain and requires the network to learn that R=G=B. Phase 1 confirmed grayscale
+matches or beats 3-channel quality.
 
 ---
 
-## 4. Augmentation Strategy
+## Augmentation
 
 ```python
-transforms.RandomHorizontalFlip(p=0.5)           # Brain symmetry
-transforms.RandomRotation(degrees=5)               # Slight head tilt
-transforms.RandomAffine(degrees=0, scale=(0.9, 1.1))  # Minor zoom variation
+transforms.RandomHorizontalFlip(p=0.5)                  # brain is bilaterally symmetric
+transforms.RandomRotation(degrees=5)                      # heads aren't always perfectly aligned
+transforms.RandomAffine(degrees=0, scale=(0.9, 1.1))     # different patients, different head sizes
 ```
 
-### Why These Specific Augmentations
+Not used and why:
+- **Vertical flip** — brain anatomy is not vertically symmetric (skull base ≠ vertex)
+- **Color jitter** — meaningless on grayscale images
+- **Elastic deformation** — brain has a rigid skull; elastic transforms produce anatomically
+  impossible geometry
 
-- **Horizontal flip**: Brain anatomy is approximately bilaterally symmetric. Flipping doubles effective dataset size.
-- **±5° rotation**: Patients' heads are rarely perfectly aligned in the scanner. Small rotations simulate realistic positioning variation.
-- **0.9–1.1× scale**: Different patients have different head sizes. Minor zoom simulates this variation without distorting anatomy.
-- **No vertical flip**: Brain anatomy is not vertically symmetric (skull base ≠ vertex).
-- **No color jitter**: Grayscale images — color augmentation is meaningless.
-- **No elastic deformation**: Brain anatomy has rigid bone boundaries — elastic transforms would produce anatomically impossible images.
-
-### Critical Implementation Detail: Separate Transforms for Train/Val
-
-```python
-transform_train = Compose([Resize, Flip, Rotate, Scale, ToTensor, Normalize])
-transform_val   = Compose([Resize, ToTensor, Normalize])  # No augmentation
-```
-
-Validation images must use deterministic transforms to produce reproducible metrics. Applying random augmentation to validation data would make metrics noisy and unreliable.
+Validation transforms never include random augmentation. Applying randomness to validation would
+make metrics non-reproducible across runs.

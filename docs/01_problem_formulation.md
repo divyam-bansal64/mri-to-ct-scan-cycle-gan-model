@@ -1,133 +1,98 @@
-# Problem Formulation: CT vs MRI Physics & Information Asymmetry
+# CT vs MRI Physics & Why Translation Is Hard
 
-> This document explains *why* cross-modality medical image translation between CT and MRI 
-> is fundamentally challenging, grounded in imaging physics rather than model architecture.
+The most important thing to understand before looking at any model results is that CT and MRI
+don't just look different — they measure fundamentally different physical properties of tissue.
+That distinction is what makes CT-to-MRI translation so difficult and MRI-to-CT more tractable.
 
 ---
 
-## 1. How CT Imaging Works
+## How CT Works
 
-**Computed Tomography (CT)** measures the **X-ray attenuation coefficient** of tissue. An X-ray beam passes through the body, and detectors measure how much radiation was absorbed along each path. Mathematical reconstruction (filtered back-projection or iterative methods) produces a volumetric image.
+CT measures **X-ray attenuation** — how much radiation tissue absorbs as an X-ray beam passes
+through it. The result is quantified in Hounsfield Units (HU), a standardized scale:
 
-### Hounsfield Units (HU)
-
-CT images are quantified in **Hounsfield Units**, a standardized linear scale:
-
-| Tissue | HU Value | Appearance |
+| Tissue | HU Value | Appearance on CT |
 | :--- | :---: | :--- |
 | Air | -1000 | Black |
 | Fat | -100 to -50 | Dark gray |
 | Water | 0 | Gray |
-| Soft tissue (muscle, organs) | +20 to +60 | Gray |
-| **Brain gray matter** | **+37 to +45** | **Gray** |
-| **Brain white matter** | **+20 to +30** | **Gray** |
+| Soft tissue (brain, muscle) | +20 to +60 | Gray |
+| Brain gray matter | +37 to +45 | Gray |
+| Brain white matter | +20 to +30 | Gray |
 | Bone (cancellous) | +300 to +500 | Light |
 | Bone (cortical/skull) | +800 to +1900 | Bright white |
 
-### Key Property: Low Soft-Tissue Contrast
+The critical thing to notice: **gray matter (+40 HU) and white matter (+25 HU) differ by only
+15 HU** out of a 2000+ HU range. On a standard brain CT, the entire parenchyma looks like a
+roughly uniform gray mass. Bone and air stand out clearly; soft tissue does not.
 
-Brain gray matter (~40 HU) and white matter (~25 HU) differ by only **~15 HU** out of a 2000+ HU dynamic range. In a standard CT image, the brain parenchyma appears as a **nearly uniform gray mass** — the intricate folding patterns of gyri and sulci, the ventricle boundaries, and white matter tracts are barely distinguishable.
-
-**CT excels at**: Bone fractures, calcifications, hemorrhage (acute blood = 50-70 HU), and air/fluid boundaries.
-
-**CT struggles with**: Differentiating normal brain tissue types, detecting subtle white matter lesions, visualizing nerve tracts.
+CT is good for: bone fractures, hemorrhage, calcifications, skull anatomy.  
+CT is poor for: soft tissue differentiation, white matter lesions, ventricular detail.
 
 ---
 
-## 2. How MRI Imaging Works
+## How MRI Works
 
-**Magnetic Resonance Imaging (MRI)** exploits the **quantum spin properties of hydrogen protons** (¹H) in water and fat molecules. A strong external magnetic field (1.5T or 3T) aligns proton spins. Radiofrequency (RF) pulses perturb this alignment, and the recovery signal is measured.
+MRI measures **T1 and T2 relaxation** of hydrogen protons in water and fat molecules. A strong
+magnetic field (1.5T or 3T) aligns proton spins; RF pulses disturb that alignment, and the
+recovery signal is measured.
 
-### Relaxation Parameters
+The key difference from CT: there is no single fixed intensity scale. By varying the pulse
+sequence parameters, the same scanner produces radically different images of the same anatomy:
 
-| Parameter | What It Measures | Effect on Image |
+| Sequence | CSF | Gray Matter | White Matter | Clinical use |
+| :--- | :---: | :---: | :---: | :--- |
+| T1-weighted | Dark | Gray | Light | Anatomy, post-contrast enhancement |
+| T2-weighted | Bright | Gray | Dark | Edema, inflammation, lesions |
+| FLAIR | Dark (suppressed) | Gray | Dark | Periventricular lesions, MS plaques |
+| DWI | Variable | Variable | Variable | Acute stroke |
+
+Gray and white matter have dramatically different T1/T2 relaxation times, so MRI produces
+high-contrast boundaries between tissue types that are invisible on CT.
+
+---
+
+## The Core Problem: Information Asymmetry
+
+This is why CT-to-MRI is genuinely hard and MRI-to-CT is more feasible:
+
+**CT → MRI** means going from low-entropy to high-entropy. The CT shows brain parenchyma as
+a near-uniform ~40 HU blob. The model must somehow synthesize gray/white matter boundaries,
+CSF brightness, and tissue contrast that was never present in the source signal.
+It also needs to decide *which MRI sequence* to produce — T1 and T2 weightings look completely
+different, and CT carries no information about which is appropriate.
+This is fundamentally a generative problem, not a translation problem.
+
+**MRI → CT** means going from high-entropy to low-entropy. MRI already shows clear boundaries
+between skull, brain, ventricles, and air. The task is to map these regions to their approximate
+HU values — a compression rather than a generation. This is why pseudo-CT synthesis from MRI is
+an active clinical research area (used in MRI-only radiotherapy planning).
+
+| Direction | Type | Difficulty |
 | :--- | :--- | :--- |
-| **T1 (spin-lattice relaxation)** | How quickly protons realign with the magnetic field | Controls tissue brightness in T1-weighted images |
-| **T2 (spin-spin relaxation)** | How quickly the transverse magnetization decays | Controls tissue brightness in T2-weighted images |
-| **Proton density** | Concentration of hydrogen atoms | Contributes to overall signal intensity |
-
-### Multiple Contrast Weightings
-
-Unlike CT (one physical quantity → one image), MRI can produce **many different images** of the same anatomy by varying pulse sequence parameters:
-
-| Sequence | CSF | Gray Matter | White Matter | Fat | Clinical Use |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| **T1-weighted** | Dark | Gray | Light | Bright | Anatomy, post-gadolinium enhancement |
-| **T2-weighted** | Bright | Gray | Dark | Gray | Edema, inflammation, lesions |
-| **FLAIR** | Dark (suppressed) | Gray | Dark | Gray | Periventricular lesions, MS plaques |
-| **DWI** | Variable | Variable | Variable | Variable | Acute stroke (restricted diffusion) |
-
-### Key Property: Rich Soft-Tissue Contrast
-
-Brain gray matter and white matter have dramatically different T1 and T2 relaxation times, producing **high-contrast boundaries** between tissue types. Ventricles, sulci, basal ganglia, and white matter tracts are all clearly delineated.
+| CT → MRI | Generative — must create information that doesn't exist in source | Very hard |
+| MRI → CT | Compressive — maps rich signal to a simpler scale | Feasible |
 
 ---
 
-## 3. The Information Asymmetry Problem
+## Why CycleGAN Makes This Worse
 
-### CT → MRI: A One-to-Many Ill-Posed Problem
+CycleGAN treats both directions with the same architecture and loss weights, ignoring the
+asymmetry entirely. The cycle consistency constraint (`G_B2A(G_A2B(CT)) ≈ CT` with λ=10.0)
+means the CT→MRI generator literally cannot afford to lose the spatial information in the input —
+it needs to preserve it for the round-trip to succeed. This pushes the generator toward copying
+the input rather than transforming it.
 
-```
-CT Scan (Single Measurement)
-    │
-    │  X-ray attenuation: Brain ≈ 40 HU (uniform gray)
-    │
-    ▼  Which MRI contrast should the model produce?
-    │
-    ├── T1-weighted? (WM bright, GM gray, CSF dark)
-    ├── T2-weighted? (WM dark, GM gray, CSF bright)  
-    ├── FLAIR?       (CSF suppressed, lesions bright)
-    └── DWI?         (Diffusion-weighted)
-```
-
-**The fundamental issue**: CT measures electron density. Brain soft tissue (gray matter, white matter, CSF) all have similar electron densities (~40 HU ± 20). But these same tissues have **dramatically different** T1/T2 relaxation times in MRI.
-
-A model attempting CT→MRI must **synthesize tissue contrast information that does not exist in the CT attenuation data**. This is not a translation problem — it's a **generative hallucination** problem. The model must decide:
-- Where are the gray/white matter boundaries? (CT can't tell you)
-- How bright should the CSF be? (Depends on T1 vs T2 weighting — CT doesn't know)
-- Are there any white matter lesions? (Invisible on CT, visible on FLAIR MRI)
-
-### MRI → CT: A Better-Posed Problem
-
-```
-MRI Scan (Rich Tissue Information)
-    │
-    │  T1/T2 relaxation: Detailed tissue boundaries
-    │  Skull/bone: Dark (fast T2 decay, low signal)
-    │  Soft tissue: Rich contrast (GM, WM, CSF distinguished)
-    │
-    ▼  Map to single CT contrast
-    │
-    └── CT: Bone = bright, Soft tissue ≈ uniform gray, Air = black
-```
-
-MRI provides **more information than CT needs**. The skull boundary is visible in MRI (dark region). Soft tissue geometry is well-defined. The model needs to map these structures to their approximate Hounsfield Unit values — a relatively deterministic, many-to-one compression.
-
-This is why **pseudo-CT generation from MRI** is an active clinical research area (used in MRI-only radiotherapy planning), while CT→MRI synthesis remains largely unsolved.
-
-### Summary: Information Flow Direction
-
-| Direction | Information Flow | Problem Type | Difficulty |
-| :--- | :--- | :--- | :---: |
-| **CT → MRI** | Low-entropy → High-entropy | **Generative** (must create information) | 🔴 Very Hard |
-| **MRI → CT** | High-entropy → Low-entropy | **Compressive** (must select/average information) | 🟢 Feasible |
-
----
-
-## 4. Implications for CycleGAN Training
-
-CycleGAN treats both directions symmetrically — same architecture, same loss weights, same training dynamics. But the physics is asymmetric:
-
-1. **G_A2B (CT→MRI)** is asked to generate rich tissue contrast from a nearly uniform input. Without the physical information to guide it, the generator defaults to the **easiest solution**: apply a global intensity transformation and preserve the input structure. This explains the "input copying" behavior observed in our experiments.
-
-2. **G_B2A (MRI→CT)** has a feasible but still challenging task. It must learn to brighten skull regions and flatten soft-tissue contrast. Our models partially learned this mapping but developed bright artifact blobs rather than learning true attenuation physics.
-
-3. **Cycle consistency makes the asymmetry worse**: Because $G_{B2A}(G_{A2B}(CT)) \approx CT$ must hold with high weight (λ=10.0), the CT→MRI generator cannot afford to lose any spatial information from the input CT. This forces it into the steganographic hiding strategy rather than genuine translation.
+The physics of CT→MRI says "generate new information". The cycle loss says "preserve all
+existing information". These are directly contradictory requirements.
 
 ---
 
 ## References
 
-- Johnstone, E., et al. "Systematic Review of Synthetic Computed Tomography Generation Methodologies for Use in Magnetic Resonance Imaging–Only Radiation Therapy." *International Journal of Radiation Oncology* (2018).
-- Han, X. "MR-based synthetic CT generation using a deep convolutional neural network method." *Medical Physics* (2017).
-- Zhu, J.-Y., et al. "Unpaired Image-to-Image Translation using Cycle-Consistent Adversarial Networks." *ICCV* (2017).
+- Johnstone et al. "Systematic Review of Synthetic CT Generation Methodologies for MRI-Only
+  Radiation Therapy." *International Journal of Radiation Oncology* (2018).
+- Han, X. "MR-based synthetic CT generation using a deep convolutional neural network."
+  *Medical Physics* (2017).
+- Zhu et al. "Unpaired Image-to-Image Translation using Cycle-Consistent Adversarial Networks."
+  *ICCV* (2017).

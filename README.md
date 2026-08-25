@@ -1,142 +1,152 @@
-# MRI ↔ CT CycleGAN: A Research Case Study in Medical Image Translation
+# MRI to CT — CycleGAN Research & Failure Analysis
 
-> ⚠️ **This is a research and engineering case study, not a medical tool.**  
-> The models trained in this project do not produce medically accurate translations.  
-> This repository documents the technical journey, failure modes, and engineering  
-> lessons learned from attempting unpaired CT↔MRI translation with CycleGAN.
-
----
-
-## What This Project Offers
-
-| Category | What You'll Find |
-| :--- | :--- |
-| 📊 **Systematic Experiment Design** | 4 phases, 20+ configurations, up to 200-epoch training runs |
-| 🔍 **Failure Mode Taxonomy** | Why CycleGAN fails at cross-modality medical image translation — with visual evidence |
-| 🐛 **30 Implementation Bugs Cataloged** | Loss function bugs with code, impact analysis, and corrected implementations |
-| 📐 **Metrics Deep-Dive** | Why SSIM ≈ 0.99 can be dangerously misleading in image translation |
-| 🧠 **Domain Physics** | CT vs MRI imaging fundamentals and the information asymmetry problem |
-| 🛠️ **Image Processing Patterns** | Medical normalization, HU windowing, augmentation strategies, FFT analysis |
+> **Note:** This is not a working medical image translator. The model doesn't perform accurate
+> cross-modality conversion. What this repository does instead is document, in detail, what
+> went wrong, why it went wrong, and what I learned from it — which turned out to be considerably
+> more useful than a model that "works."
 
 ---
 
-## Key Finding: The Model Replicates Instead of Translating
+## Background
 
-After 200 epochs of training across multiple configurations, visual inspection reveals that the CycleGAN generators learned to **apply global intensity shifts to the input image** rather than performing genuine cross-modality translation:
+This started as an attempt to train a CycleGAN to convert between CT and MRI brain scans without
+paired training data. After running 4 phases of experiments (~20+ configurations, up to 200 training
+epochs each on Kaggle T4 GPUs), the honest conclusion is that the model learned to copy the input
+image with a brightness shift rather than performing any actual modality translation.
+
+The reasons for this are partly architectural (CycleGAN's cycle-consistency loss actively incentivizes
+input preservation), partly physics-based (CT and MRI carry fundamentally different amounts of
+information — the conversion isn't symmetric), and partly implementation (30 bugs found and fixed
+across the course of training, including some that inflated the generator loss by 5-16x without
+obvious error messages).
+
+Those three things — the architecture analysis, the physics, and the bugs — are what the docs
+in this repo try to capture properly.
+
+---
+
+## Key Finding
+
+After 200 epochs, the generators produce this:
 
 ![Phase 4 Epoch 200 Sample Grid](docs/assets/phase4_epoch_200.png)
-*Panel 1: Real CT | Panel 2: Fake MRI (retains CT skull) | Panel 3: Real MRI | Panel 4: Fake CT (hallucinated bright blobs)*
 
-* **CT → "MRI" output (Panel 2)**: Retains the bright skull rim (real MRI shows skull as dark), same internal contrast — effectively a brightness-adjusted copy of the input CT.
-* **MRI → "CT" output (Panel 4)**: Early epochs produce a recolored MRI. Later epochs develop bright artifact blobs with no anatomical basis (partial mode collapse).
+*Left to right: Real CT — "Fake MRI" — Real MRI — "Fake CT"*
 
-**Why high SSIM is misleading here**: Cycle consistency loss (λ=10.0) + identity loss (λ=5.0) = 15× reconstruction weight vs 1× adversarial weight. The model chose the path of least resistance — hide input information steganographically and reproduce it on the return trip.
+The "Fake MRI" (panel 2) still has the bright skull rim that only appears in CT. The "Fake CT"
+(panel 4) develops large bright blob artifacts in the brain parenchyma with no anatomical basis.
+Neither generator is translating — one is copying, the other is hallucinating.
 
-See [docs/05_failure_mode_taxonomy.md](docs/05_failure_mode_taxonomy.md) for full visual progression and analysis.
+The SSIM score at epoch 200 was 0.9959, which sounds impressive. It means the fake MRI is
+structurally 99.6% identical to the source CT — exactly the problem.
 
----
-
-## Project Structure & Knowledge Generalizability
-
-Each file is tagged with its **scope of applicability** — much of this repo is useful far beyond this specific project:
-
-> 🌍 = Any GAN / deep learning project &nbsp;│&nbsp; 🔄 = Image-to-image translation &nbsp;│&nbsp; 🏥 = Medical imaging AI &nbsp;│&nbsp; 📌 = This project only
-
-```
-├── docs/
-│   ├── 01_problem_formulation.md       🏥  CT vs MRI physics & information asymmetry
-│   ├── 02_architecture_decisions.md    🔄  Generator, discriminator, upsampling, normalization
-│   ├── 03_loss_function_analysis.md    🌍  Loss dynamics, weight balancing, scale normalization
-│   ├── 04_experiment_matrix.md         📌  All experiment configs and results tables
-│   ├── 05_failure_mode_taxonomy.md     🔄  Input copying, steganography, L1 oversmoothing
-│   ├── 06_metrics_literacy.md          🌍  SSIM trap, FID interpretation, metric bundles
-│   ├── 07_image_preprocessing.md       🏥  HU windowing, CLAHE, medical augmentation
-│   └── 08_lessons_and_future_work.md   🔄  Engineering rules, CUT/Diffusion alternatives
-│
-├── models/
-│   ├── generator.py                    🔄  ResNet-9 Generator (reusable for any CycleGAN)
-│   └── discriminator.py               🔄  PatchGAN Discriminator (reusable)
-│
-├── utils/
-│   ├── losses.py                       🌍  VGG perceptual loss, FFT loss (buggy originals)
-│   ├── losses_phase_4.py              🌍  Corrected: normalized FFT, deep VGG (relu4_2)
-│   ├── metrics.py                      🌍  SSIM, FID, Dice, FFT ratio implementations
-│   └── dataset.py                      🏥  Unpaired medical image dataset loader
-│
-├── experiment_v2/
-│   └── train_experiment_phase_4.py     📌  Phase 4 training script (200-epoch)
-│
-├── errors_to_remember.md              🌍  30 implementation bugs with fixes
-└── README.md                           📌  Project overview
-```
-
-**~70% of documentation is generalizable** beyond this project — loss analysis, failure modes, metrics guides, and architecture decisions apply to anyone working with GANs or image translation.
+Details and visual progression from epoch 10 to 200 are in
+[docs/05_failure_mode_taxonomy.md](docs/05_failure_mode_taxonomy.md).
 
 ---
 
-## Experiment Phases Overview
+## Repository Structure
 
-| Phase | Runs | Epochs | Key Objective | Key Outcome |
+The docs cover material at different levels of specificity. Files useful beyond this specific
+project are noted:
+
+```
+docs/
+  01_problem_formulation.md       [medical imaging]    CT vs MRI physics, information asymmetry
+  02_architecture_decisions.md    [image translation]  Generator, discriminator, upsampling choices
+  03_loss_function_analysis.md    [general GAN]        Loss dynamics, weight imbalance, scale bugs
+  04_experiment_matrix.md         [this project]       All run configs and result tables
+  05_failure_mode_taxonomy.md     [image translation]  Input copying, steganography, mode collapse
+  06_metrics_literacy.md          [general GAN]        Why SSIM is misleading in translation tasks
+  07_image_preprocessing.md       [medical imaging]    HU windowing, normalization, augmentation
+  08_lessons_and_future_work.md   [image translation]  What to do differently, CUT vs CycleGAN
+
+models/
+  generator.py                    [image translation]  ResNet-9 Generator
+  discriminator.py                [image translation]  PatchGAN Discriminator
+
+utils/
+  losses.py                       [general GAN]        VGG and FFT losses (original versions)
+  losses_phase_4.py               [general GAN]        Corrected FFT (normalized) and deep VGG
+  metrics.py                      [general GAN]        SSIM, FID, Dice, FFT ratio
+  dataset.py                      [medical imaging]    Unpaired image dataset loader
+
+experiment_v2/
+  train_experiment_phase_4.py     [this project]       200-epoch training script
+
+errors_to_remember.md             [general GAN]        30 bugs documented with before/after code
+```
+
+The general GAN and image translation docs are written to be self-contained — you don't need
+to know anything about this specific project to find them useful.
+
+---
+
+## Experiment Summary
+
+| Phase | Configs | Epochs | What I was testing | What happened |
 | :---: | :---: | :---: | :--- | :--- |
-| **1** | 1 | 50 | Find best base architecture | H_full (9 ResNet blocks, ConvTranspose) won |
-| **2** | 9 | 50 | Hyperparameter search (losses, LR, upsampling) | 8 critical bugs discovered; Run 0 baseline best |
-| **3** | 7 | 50 | Corrected loss implementations (R1, FFT, VGG) | R1 penalty proven essential for D stability |
-| **4** | 2 | 200 | Full training with best configurations | Model replicates input; doesn't translate |
+| 1 | 1 | 50 | Architecture baseline (ResNet blocks, upsampling methods) | 9-block + ConvTranspose was the clear winner |
+| 2 | 9 | 50 | Hyperparameter search across loss combinations | Found 8 bugs; plain baseline outperformed everything |
+| 3 | 7 | 50 | Corrected loss implementations (R1, normalized FFT, deep VGG) | R1 gradient penalty was the single most impactful fix |
+| 4 | 2 | 200 | Full-length training with best configs | Both models converge to input copying |
 
 ---
 
-## Technical Highlights
+## The Bugs Worth Knowing About
 
-### Loss Function Bug Discovery
+These four caused the most damage and are worth understanding if you're working on any GAN:
 
-| Bug | Severity | Impact |
-| :--- | :---: | :--- |
-| FFT loss using raw magnitudes (O(1000)) instead of power ratios (O(0.001)) | 🔴 Critical | Inflated generator loss by 5-16×, caused discriminator collapse |
-| R1 gradient penalty scaled 32× too strong | 🔴 Critical | Violent discriminator loss oscillation |
-| VGG perceptual loss at relu2_2 (shallow) instead of relu4_2 (semantic) | 🟠 High | Gibbs-ringing artifacts, 10× FFT spike |
-| TTUR (4× discriminator LR) combined with CycleGAN | 🟠 High | Failed in 3/3 runs; wrong for multi-loss generators |
+| Bug | Impact |
+| :--- | :--- |
+| FFT loss computed on raw magnitudes (O(1000)) instead of power ratios (O(0.001)) | Generator loss inflated 5-16x, completely dominated training |
+| R1 gradient penalty scaled 32x too strong | Discriminator loss oscillated violently — never stabilized |
+| VGG perceptual loss extracted from relu2_2 instead of relu4_2 | Gibbs ringing artifacts around skull boundary — FFT ratio spiked 10x |
+| TTUR (4x discriminator learning rate) applied to CycleGAN | Failed in every run it was used — wrong assumption for multi-loss generators |
 
-See [docs/03_loss_function_analysis.md](docs/03_loss_function_analysis.md) and [errors_to_remember.md](errors_to_remember.md) for complete catalog.
-
-### Why CycleGAN Cannot Solve This Problem
-
-1. **Information asymmetry**: CT soft tissue is a ~uniform gray blob; MRI reveals rich tissue contrast. CT→MRI requires hallucinating information that doesn't exist in the source.
-2. **Cycle consistency incentivizes copying**: With λ_cycle=10.0, the easiest way to guarantee perfect reconstruction is to hide the input in imperceptible noise patterns.
-3. **L1 loss rewards blurriness**: The generator outputs the pixel-wise mean of all valid targets, achieving high SSIM but zero perceptual quality.
-
-See [docs/01_problem_formulation.md](docs/01_problem_formulation.md) for the physics explanation.
+Full catalog with code: [errors_to_remember.md](errors_to_remember.md)
+Full analysis: [docs/03_loss_function_analysis.md](docs/03_loss_function_analysis.md)
 
 ---
 
-## Requirements
+## Why CycleGAN Specifically Struggles Here
 
+Three reasons, in rough order of importance:
+
+**The physics is asymmetric.** CT measures X-ray attenuation — brain soft tissue all looks
+roughly the same (~40 HU). MRI measures T1/T2 relaxation, which distinguishes gray matter,
+white matter, CSF, and more. CT→MRI requires generating tissue contrast that doesn't exist
+in the source signal. MRI→CT is a compression problem; CT→MRI is a generative problem.
+
+**Cycle consistency actively discourages translation.** The identity and cycle losses together
+weighted 15x heavier than the adversarial loss. The optimal strategy under that loss landscape
+is to preserve the input — which is what both models did.
+
+**L1 loss rewards blurry averages.** When the correct output is uncertain, L1 minimization
+produces the mean of all plausible outputs. That mean is blurry and structurally similar to
+the input, so SSIM goes up even as the output quality goes down.
+
+See [docs/01_problem_formulation.md](docs/01_problem_formulation.md) for the full physics writeup.
+
+---
+
+## Running It
+
+```bash
+pip install -r requirements.txt
 ```
-torch>=1.12
-torchvision>=0.13
-Pillow
-numpy
-scikit-image
+
+Dataset: [CT-to-MRI cGAN on Kaggle](https://www.kaggle.com/datasets/darren2020/ct-to-mri-cgan)
+(axial brain slices, unpaired CT and MRI domains)
+
+```bash
+python experiment_v2/train_experiment_phase_4.py Phase4_Beta_Control
 ```
 
 ---
 
-## Dataset
+## References
 
-This project uses the [CT-to-MRI cGAN dataset](https://www.kaggle.com/datasets/darren2020/ct-to-mri-cgan) from Kaggle:
-- **Domain A (CT)**: Axial brain CT slices
-- **Domain B (MRI)**: Axial brain MRI slices
-- Unpaired — no patient-level correspondence between CT and MRI images
-
----
-
-## License
-
-This project is released for educational and research purposes.
-
----
-
-## Acknowledgments
-
-- CycleGAN architecture based on [Zhu et al., 2017](https://arxiv.org/abs/1703.10593)
-- Dataset: [Darren2020/ct-to-mri-cgan](https://www.kaggle.com/datasets/darren2020/ct-to-mri-cgan) on Kaggle
-- Training infrastructure: Kaggle T4×2 GPU notebooks
+- Zhu et al. — [Unpaired Image-to-Image Translation using Cycle-Consistent Adversarial Networks](https://arxiv.org/abs/1703.10593) (ICCV 2017)
+- Chu et al. — [CycleGAN, a Master of Steganography](https://arxiv.org/abs/1712.02950) (2017)
+- Park et al. — [Contrastive Learning for Unpaired Image-to-Image Translation](https://arxiv.org/abs/2007.15651) (ECCV 2020)
